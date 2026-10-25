@@ -1,15 +1,9 @@
 import React, { useState, useEffect } from 'react';
+import { configMessage, defaultItems, fromProductRow, getCartId, supabase, supabaseReady } from './supabase';
 
 export default function Quotation() {
   // ۱. استیت آرایه محصولات مرجع کارگاه مبلمان
-  const [furnitureItems, setFurnitureItems] = useState([
-    { id: "1", title: "Ergonomic Office Chair", roomCategory: "office", material: "Leather & Steel", image: "/chair 1.png", unitPriceAFN: 3500, availableQuantity: 5, description: "Premium orthopedic swivel chair with lumbar support and adjustable height." },
-    { id: "2", title: "Modern Executive Desk", roomCategory: "office", material: "Solid MDF", image: "/table 1.png", unitPriceAFN: 6000, availableQuantity: 4, description: "Sleek office workstation featuring integrated cable management holes." },
-    { id: "3", title: "Classic Wooden Dining Chair", roomCategory: "dining room", material: "Natural Oak", image: "/chair 2.png", unitPriceAFN: 1500, availableQuantity: 8, description: "Minimalist finely polished timber chair, perfect for elegant dining rooms." },
-    { id: "4", title: "Robust Workshop Dining Table", roomCategory: "dining room", material: "Walnut Wood", image: "/table 2.png", unitPriceAFN: 4000, availableQuantity: 3, description: "Sturdy artisan crafted dining table designed for family gatherings." },
-    { id: "5", title: "Luxury Accent Armchair", roomCategory: "living room", material: "Velvet Fabric", image: "/furniture 3.png", unitPriceAFN: 9500, availableQuantity: 6, description: "Ultra-soft single sofa seat equipped with high-density comfort foam." },
-    { id: "6", title: "Modern Living Room Sectional", roomCategory: "living room", material: "Premium Linen", image: "/furniture 4.png", unitPriceAFN: 24000, availableQuantity: 2, description: "Contemporary style spacious sofa set tailored for luxury living spaces." }
-  ]);
+  const [furnitureItems, setFurnitureItems] = useState(defaultItems);
 
   const [cart, setCart] = useState({});
   const [includeFinishing, setIncludeFinishing] = useState(false);
@@ -21,26 +15,24 @@ export default function Quotation() {
 
   // ۲. بارگذاری داده‌های زنده و لیست فاکتورهای ذخیره شده قبلی از لوکال استوریج
   useEffect(() => {
-    const savedItems = localStorage.getItem('workshop_furniture_items');
-    const savedCart = JSON.parse(localStorage.getItem('furniture_cart') || '{}');
-    const savedInvoices = JSON.parse(localStorage.getItem('furniture_invoices_list') || '[]');
-    
-    setCart(savedCart);
-    setInvoicesList(savedInvoices);
-
-    if (savedItems) {
-      const parsedItems = JSON.parse(savedItems);
-      const formattedItems = parsedItems.map(f => ({
-        ...f,
-        unitPriceAFN: Number(f.unitPriceAFN),
-        availableQuantity: Number(f.availableQuantity)
-      }));
-      setFurnitureItems(formattedItems);
-    }
+    if (!supabaseReady) return;
+    Promise.all([
+      supabase.from('furniture_items').select('*').order('id'),
+      supabase.from('site_cart').select('items').eq('id', getCartId()).maybeSingle(),
+      supabase.from('quotations').select('*').order('created_at', { ascending: false })
+    ]).then(([itemsResult, cartResult, quotesResult]) => {
+      if (itemsResult.error || cartResult.error || quotesResult.error) {
+        window.alert(itemsResult.error?.message || cartResult.error?.message || quotesResult.error?.message);
+        return;
+      }
+      setFurnitureItems(itemsResult.data.map(fromProductRow));
+      setCart(cartResult.data?.items || {});
+      setInvoicesList(quotesResult.data.map(row => ({ id: row.id, customer: row.customer, products: row.products, subtotal: Number(row.subtotal), finishing: Number(row.finishing), total: Number(row.total) })));
+    });
   }, []);
 
   // ۳. مدیریت تعاملی و برعکس تعداد اقلام فاکتور با انبار کاتالوگ
-  const updateQuantity = (id, amount) => {
+  const updateQuantity = async (id, amount) => {
     const item = furnitureItems.find(f => f.id === id);
     if (!item) return;
 
@@ -49,46 +41,28 @@ export default function Quotation() {
       return;
     }
 
-    const updatedCart = { ...cart };
-    const newQty = (cart[id] || 0) + amount;
-    
-    if (newQty <= 0) {
-      delete updatedCart[id];
-    } else {
-      updatedCart[id] = newQty;
-    }
-    setCart(updatedCart);
-    localStorage.setItem('furniture_cart', JSON.stringify(updatedCart));
-
-    const updatedItems = furnitureItems.map(f => {
-      if (f.id === id) {
-        return { ...f, availableQuantity: f.availableQuantity - amount };
-      }
-      return f;
-    });
-    setFurnitureItems(updatedItems);
-    localStorage.setItem('workshop_furniture_items', JSON.stringify(updatedItems));
+    const { data, error } = await supabase.rpc('adjust_cart', { p_cart_id: getCartId(), p_item_id: String(id), p_delta: amount });
+    if (error) { window.alert(error.message); return; }
+    setCart(data.cart || {});
+    setFurnitureItems(items => items.map(f => f.id === String(id) ? { ...f, availableQuantity: data.available_quantity } : f));
   };
   // دکمه عملکرد: پاک کردن کل لیست پیش‌نویس فعلی و بازگرداندن تعداد کالاها به انبار
-  const resetCart = () => {
-    const updatedItems = furnitureItems.map(f => {
-      const reservedQty = cart[f.id] || 0;
-      return { ...f, availableQuantity: f.availableQuantity + reservedQty };
-    });
-    setFurnitureItems(updatedItems);
-    localStorage.setItem('workshop_furniture_items', JSON.stringify(updatedItems));
-
+  const resetCart = async () => {
+    for (const [id, quantity] of Object.entries(cart)) {
+      const { error } = await supabase.rpc('adjust_cart', { p_cart_id: getCartId(), p_item_id: String(id), p_delta: -quantity });
+      if (error) { window.alert(error.message); return; }
+    }
+    setFurnitureItems(items => items.map(item => ({ ...item, availableQuantity: item.availableQuantity + (cart[item.id] || 0) })));
     setCart({});
-    localStorage.setItem('furniture_cart', JSON.stringify({}));
     setIncludeFinishing(false);
   };
 
   // دکمه عملکرد جدید: حذف یک پیش‌فاکتور خاص از لیست فاکتورهای صادر شده بدون تغییر در انبار
-  const handleDeleteInvoice = (invoiceId) => {
+  const handleDeleteInvoice = async (invoiceId) => {
     if (window.confirm('Are you sure you want to delete this specific quotation record?')) {
-      const updatedList = invoicesList.filter(inv => inv.id !== invoiceId);
-      setInvoicesList(updatedList);
-      localStorage.setItem('furniture_invoices_list', JSON.stringify(updatedList));
+      const { error } = await supabase.from('quotations').delete().eq('id', invoiceId);
+      if (error) { window.alert(error.message); return; }
+      setInvoicesList(invoices => invoices.filter(inv => inv.id !== invoiceId));
     }
   };
 
@@ -125,7 +99,7 @@ export default function Quotation() {
   const isFormInvalid = errors.alias || errors.email || !customerInfo.alias.trim() || !customerInfo.email.trim();
 
   // تابع عملکرد دکمه ارسال: ذخیره فاکتور جدید در انتهای لیست ماندگار لوکال استوریج (زیر قبلی‌ها)
-  const handleSendQuote = () => {
+  const handleSendQuote = async () => {
     if (isFormInvalid) return;
 
     const invoiceProducts = Object.keys(cart).map(id => {
@@ -139,7 +113,7 @@ export default function Quotation() {
     });
 
     const newInvoice = {
-      id: Date.now().toString(), // شناسه منحصربه‌فرد برای هر فاکتور جهت حذف آسان
+      id: crypto.randomUUID(),
       customer: { ...customerInfo },
       products: invoiceProducts,
       subtotal: subtotal,
@@ -148,13 +122,15 @@ export default function Quotation() {
     };
 
     // متصل کردن فاکتور جدید به لیست فاکتورهای قبلی و ذخیره ماندگار
-    const updatedInvoicesList = [...invoicesList, newInvoice];
-    setInvoicesList(updatedInvoicesList);
-    localStorage.setItem('furniture_invoices_list', JSON.stringify(updatedInvoicesList));
+    const { error } = await supabase.rpc('submit_quotation', {
+      p_id: newInvoice.id, p_cart_id: getCartId(), p_customer: newInvoice.customer, p_products: newInvoice.products,
+      p_subtotal: newInvoice.subtotal, p_finishing: newInvoice.finishing, p_total: newInvoice.total
+    });
+    if (error) { window.alert(error.message); return; }
+    setInvoicesList(invoices => [newInvoice, ...invoices]);
 
     // ریست کردن سبد خرید و فیلدهای فرم جاری بدون تغییر در انبار کاتالوگ
     setCart({});
-    localStorage.setItem('furniture_cart', JSON.stringify({}));
     setCustomerInfo({ alias: '', email: '', date: '', notes: '' });
     setIncludeFinishing(false);
     alert('Quotation generated successfully and added to the historical records below.');
@@ -162,6 +138,7 @@ export default function Quotation() {
 
   return (
     <div className="max-w-4xl mx-auto p-6 font-sans text-left" dir="ltr">
+      {!supabaseReady && <p className="mb-4 text-xs text-red-600">{configMessage()}</p>}
       <div className="mb-8 border-l-4 border-[#3e2723] pl-4">
         <h2 className="text-xl font-black uppercase tracking-wider text-gray-900">Quotation Planner</h2>
         <p className="text-xs text-gray-400 mt-1">Review selected items, apply options, and generate a formal project estimation</p>

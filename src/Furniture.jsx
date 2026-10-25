@@ -1,48 +1,30 @@
 import React, { useState, useEffect } from 'react';
 import { FurnitureCard } from './FurnitureCard';
+import { configMessage, fromProductRow, getCartId, supabase, supabaseReady } from './supabase';
 
 export default function Furniture() {
-  const defaultItems = [
-    { id: "1", title: "Ergonomic Office Chair", roomCategory: "office", material: "Leather & Steel", image: "/chair 1.png", unitPriceAFN: 3500, availableQuantity: 5, description: "Premium orthopedic swivel chair with lumbar support and adjustable height." },
-    { id: "2", title: "Modern Executive Desk", roomCategory: "office", material: "Solid MDF", image: "/table 1.png", unitPriceAFN: 6000, availableQuantity: 4, description: "Sleek office workstation featuring integrated cable management holes." },
-    { id: "3", title: "Classic Wooden Dining Chair", roomCategory: "dining room", material: "Natural Oak", image: "/chair 2.png", unitPriceAFN: 1500, availableQuantity: 8, description: "Minimalist finely polished timber chair, perfect for elegant dining rooms." },
-    { id: "4", title: "Robust Workshop Dining Table", roomCategory: "dining room", material: "Walnut Wood", image: "/table 2.png", unitPriceAFN: 4000, availableQuantity: 3, description: "Sturdy artisan crafted dining table designed for family gatherings." },
-    { id: "5", title: "Luxury Accent Armchair", roomCategory: "living room", material: "Velvet Fabric", image: "/furniture 3.png", unitPriceAFN: 9500, availableQuantity: 6, description: "Ultra-soft single sofa seat equipped with high-density comfort foam." },
-    { id: "6", title: "Modern Living Room Sectional", roomCategory: "living room", material: "Premium Linen", image: "/furniture 4.png", unitPriceAFN: 24000, availableQuantity: 2, description: "Contemporary style spacious sofa set tailored for luxury living spaces." }
-  ];
-
-  const [furnitureItems, setFurnitureItems] = useState(defaultItems);
+  const [furnitureItems, setFurnitureItems] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [sortByPrice, setSortByPrice] = useState('none');
   const [showOnlyAvailable, setShowOnlyAvailable] = useState(false);
 
   useEffect(() => {
-    const savedItems = localStorage.getItem('workshop_furniture_items');
-    
-    if (savedItems) {
-      setFurnitureItems(JSON.parse(savedItems));
-    } else {
-      localStorage.setItem('workshop_furniture_items', JSON.stringify(defaultItems));
-    }
+    if (!supabaseReady) return;
+    supabase.from('furniture_items').select('*').order('id').then(({ data, error }) => {
+      if (error) { window.alert(error.message); return; }
+      setFurnitureItems(data.map(fromProductRow));
+    });
   }, []);
 
   // تابع واحد و ساده: با هر کلیک یکی از انبار کم می‌کند و یکی به سبد پیش‌فاکتور اضافه می‌کند
-  const handleAddToCart = (id) => {
+  const handleAddToCart = async (id) => {
     // ۱. کم کردن مستقیم از موجودی انبار کاتالوگ
-    const updatedItems = furnitureItems.map(item => {
-      if (item.id === id && item.availableQuantity > 0) {
-        return { ...item, availableQuantity: item.availableQuantity - 1 };
-      }
-      return item;
-    });
-    setFurnitureItems(updatedItems);
-    localStorage.setItem('workshop_furniture_items', JSON.stringify(updatedItems));
+    const { data, error } = await supabase.rpc('adjust_cart', { p_cart_id: getCartId(), p_item_id: String(id), p_delta: 1 });
+    if (error) { window.alert(error.message); return; }
+    setFurnitureItems(items => items.map(item => item.id === String(id) ? { ...item, availableQuantity: data.available_quantity } : item));
 
     // ۲. افزودن مستقیم تعداد در سبد خرید پیش‌فاکتور (Quotation)
-    const currentCart = JSON.parse(localStorage.getItem('furniture_cart') || '{}');
-    currentCart[id] = (currentCart[id] || 0) + 1;
-    localStorage.setItem('furniture_cart', JSON.stringify(currentCart));
   };
 
   const filteredItems = furnitureItems
@@ -56,6 +38,7 @@ export default function Furniture() {
     });
   return (
     <div className="max-w-7xl mx-auto p-6 font-sans text-left" dir="ltr">
+      {!supabaseReady && <p className="mb-4 text-xs text-red-600">{configMessage()}</p>}
       {/* تیتر بالای کاتالوگ با استایل لوکس کلاسیک */}
       <div className="mb-8 border-l-4 border-[#3e2723] pl-4">
         <h2 className="text-xl font-black uppercase tracking-wider text-gray-900">Our Furniture Collection</h2>
